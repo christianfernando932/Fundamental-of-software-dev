@@ -1,8 +1,7 @@
-# student.py
 from database import Database                      # your team's storage layer
 from validation import (
     is_valid_email, is_valid_password,             # regex checks
-    generate_student_id, validate_menu_choice,     # id + menu helper
+    generate_student_id,                           # id + menu helper
     notify                                         # standardised messages
 )
 
@@ -42,15 +41,15 @@ def register_student(db: Database):
         return
 
     # 2) load all students and block duplicate email
-    students = db.load_all_students()
-
-    if any(s.get("email") == email for s in students):
+    if db.find_by_email(email):
         notify("A student with that email already exists.")
         return
 
+    students = db.load_students()
+    new_id = generate_student_id([s["id"] for s in students])
+
     # 3) unique 6-digit ID using helper (avoid collisions)
     existing_ids = [s.get("id") for s in students]
-    new_id = generate_student_id(existing_ids)
 
     # 4) create record (dict matches database schema)
     new_student = {
@@ -58,23 +57,29 @@ def register_student(db: Database):
         "name": name,
         "email": email,
         "password": password,
-        "subjects": []
+        "subjects": [],
+        "average": 0.0,
+        "grade": "Z"
     }
 
     # 5) save (append) to students.data via database.py
-    db.append_student(new_student)
-
-    notify(f"Registration successful! Your ID is {new_id}")
-
+    if db.add_student(new_student):
+        notify(f"Registration successful! Your ID is {new_id}")
+    else:
+        notify("Registration failed (duplicate or write error).")
+    
 def login_student(db: Database):
     print("\n--- Login ---")
     email = input("Email: ").strip()
     password = input("Password: ").strip()
 
-    students = db.load_all_students()
-    for s in students:
-        if s.get("email") == email and s.get("password") == password:
-            return s
+    if not is_valid_email(email) or not is_valid_password(password):
+        notify("Invalid credentials format.")
+        return None
+
+    s = db.find_by_email(email)
+    if s and s.get("password") == password:
+        return s
 
     notify("Invalid credentials.")
     return None
