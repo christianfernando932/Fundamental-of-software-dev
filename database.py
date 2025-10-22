@@ -1,150 +1,100 @@
-# database.py
 """
-Database layer for CLIUniApp.
-- File: students.data (JSON array)
-- Operations: init/check file, read all, write all, append, find/remove by ID, clear
-Safe JSON handling with graceful fallbacks.
+database.py
+Pickle-backed Database for Student records stored in students.data
+
+Student dict structure expected:
+{
+  "id": "000123",
+  "name": "Alice",
+  "email": "alice@university.com",
+  "password": "StartX999",
+  "subjects": [
+      {"id": "101", "mark": 78, "grade": "D"},
+      ...
+  ]
+}
 """
 
 from __future__ import annotations
-import json
 import os
-import tempfile
-from typing import List, Dict, Optional
+import pickle
+from typing import List, Dict, Any, Optional
 
-DATA_FILE = "students.data"
-
-
-class DatabaseError(Exception):
-    """Generic database exception."""
-
+Student = Dict[str, Any]
 
 class Database:
-    def __init__(self, file_path: str = DATA_FILE):
-        self.file_path = file_path
-        self.initialise_storage()
+    def __init__(self, filename: str = "students.data"):
+        self.filename = filename
+        folder = os.path.dirname(self.filename)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
+        if not os.path.exists(self.filename):
+            with open(self.filename, "wb") as f:
+                pickle.dump([], f)
 
-    # ---------- File existence / initialization ----------
-
-    def initialise_storage(self) -> None:
-        """
-        Ensure students.data exists and is a valid JSON array.
-        If file is empty or corrupt, re-write as [].
-        """
-        if not os.path.exists(self.file_path):
-            self._write_json_atomic([])
-            return
-
-        # If exists, make sure it contains a JSON array
+    # ---- core file ops ----
+    def _read(self) -> List[Student]:
         try:
-            data = self._read_json()
-            if not isinstance(data, list):
-                # reset to empty list
-                self._write_json_atomic([])
-        except json.JSONDecodeError:
-            # Corrupt or empty → reset gracefully
-            self._write_json_atomic([])
+            with open(self.filename, "rb") as f:
+                data = pickle.load(f)
+                return data if isinstance(data, list) else []
+        except (EOFError, FileNotFoundError, pickle.PickleError):
+            return []
 
-    # ---------- Low-level JSON I/O ----------
+    def _write(self, students: List[Student]) -> None:
+        with open(self.filename, "wb") as f:
+            pickle.dump(students, f)
 
-    def _read_json(self) -> List[Dict]:
-        with open(self.file_path, "r", encoding="utf-8") as f:
-            txt = f.read().strip()
-            if not txt:
-                return []
-            return json.loads(txt)
+    # ---- public API used by the app ----
+    def load_students(self) -> List[Student]:
+        return self._read()
 
-    def _write_json_atomic(self, data: List[Dict]) -> None:
-        """
-        Atomic write to avoid corruption: write to temp file then replace.
-        """
-        dir_name = os.path.dirname(os.path.abspath(self.file_path)) or "."
-        fd, tmp_path = tempfile.mkstemp(dir=dir_name, prefix="._students_", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as tmp:
-                json.dump(data, tmp, indent=2)
-            os.replace(tmp_path, self.file_path)
-        except Exception as e:
-            # Clean up temp file on failure
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
-            raise DatabaseError(f"Failed to write database: {e}") from e
+    def save_students(self, students: List[Student]) -> None:
+        self._write(students)
 
-    # ---------- High-level operations ----------
+    def clear(self) -> None:
+        self._write([])
 
-    def load_all_students(self) -> List[Dict]:
-        """
-        Returns a list of student dicts.
-        Schema (expected by controllers):
-        {
-          "id": "000123",
-          "name": "Alice",
-          "email": "alice@university.com",
-          "password": "HashedOrPlainPerYourDesign",
-          "subjects": [
-              {"id": "001", "mark": 72, "grade": "C"},
-              ...
-          ]
-        }
-        """
-        return self._read_json()
+    # ---- convenience helpers for subsystems ----
+    def get_all(self) -> List[Student]:
+        return self._read()
 
-    def write_all_students(self, students: List[Dict]) -> None:
-        """
-        Overwrite the entire file with the provided list.
-        """
-        self._write_json_atomic(students)
+    def save_all(self, students: List[Student]) -> None:
+        self._write(students)
 
-    def append_student(self, student: Dict) -> None:
-        """
-        Add a new student to the file.
-        """
-        students = self.load_all_students()
-        students.append(student)
-        self._write_json_atomic(students)
-
-    def find_student_by_id(self, student_id: str) -> Optional[Dict]:
-        """
-        Find a single student by 6-digit string id (e.g., '000123').
-        """
-        students = self.load_all_students()
-        for s in students:
-            if s.get("id") == student_id:
+    def find_by_id(self, sid: str) -> Optional[Student]:
+        sid = str(sid)
+        for s in self._read():
+            if str(s.get("id")) == sid:
                 return s
         return None
 
-    def remove_student_by_id(self, student_id: str) -> bool:
-        """
-        Remove a student by id. Returns True if deleted, False if not found.
-        """
-        students = self.load_all_students()
-        new_list = [s for s in students if s.get("id") != student_id]
-        removed = len(new_list) != len(students)
+    def find_by_email(self, email: str) -> Optional[Student]:
+        for s in self._read():
+            if s.get("email") == email:
+                return s
+        return None
+
+    def add_student(self, student: Student) -> bool:
+        rows = self._read()
+        if any(r.get("email") == student.get("email") for r in rows):
+            return False
+        rows.append(student)
+        self._write(rows)
+        return True
+
+    def update_student(self, student: Student) -> None:
+        rows = self._read()
+        for i, r in enumerate(rows):
+            if r.get("id") == student.get("id"):
+                rows[i] = student
+                break
+        self._write(rows)
+
+    def remove_by_id(self, sid: str) -> bool:
+        rows = self._read()
+        new_rows = [r for r in rows if str(r.get("id")) != str(sid)]
+        removed = len(new_rows) < len(rows)
         if removed:
-            self._write_json_atomic(new_list)
+            self._write(new_rows)
         return removed
-
-    def clear_all(self) -> None:
-        """
-        Remove all students.
-        """
-        self._write_json_atomic([])
-
-    # ---------- Subject helpers (optional, handy for Person 3) ----------
-
-    def update_student(self, updated: Dict) -> None:
-        """
-        Replace a student record with matching id.
-        """
-        sid = updated.get("id")
-        if not sid:
-            raise DatabaseError("Student has no id.")
-        students = self.load_all_students()
-        for i, s in enumerate(students):
-            if s.get("id") == sid:
-                students[i] = updated
-                self._write_json_atomic(students)
-                return
-        raise DatabaseError(f"Student id {sid} not found.")
